@@ -354,6 +354,16 @@ app.delete('/api/admin/users/:id', auth, async (req, res) => {
   }
 });
 
+// Test database connection
+app.get('/api/test-db', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT NOW()');
+    res.json({ success: true, time: result.rows[0].now, dbUrl: process.env.DB_URL ? 'Set' : 'Not set' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message, dbUrl: process.env.DB_URL ? 'Set' : 'Not set' });
+  }
+});
+
 // Serve frontend
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
