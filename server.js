@@ -3,12 +3,41 @@ const cors = require('cors');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { pool, initDB } = require('./database');
+const { db } = require('./firebase-config');
 
 const app = express();
 
-// Initialize database on startup
-initDB();
+// Initialize default users
+async function initializeDefaultUsers() {
+  try {
+    const adminDoc = await db.collection('users').where('email', '==', 'admin@eclinic.com').get();
+    if (adminDoc.empty) {
+      await db.collection('users').add({
+        name: 'Admin User',
+        email: 'admin@eclinic.com',
+        password: '$2a$12$LQv3c1yqBw2uuCD4Gdl30OQ3xvL0Au50cS2Q2b6Ece8aeRXuL.daa',
+        role: 'admin',
+        createdAt: new Date()
+      });
+      
+      await db.collection('users').add({
+        name: 'Dr. Smith',
+        email: 'doctor@eclinic.com',
+        password: '$2a$12$LQv3c1yqBw2uuCD4Gdl30OQ3xvL0Au50cS2Q2b6Ece8aeRXuL.daa',
+        role: 'doctor',
+        specialization: 'General Medicine',
+        experience: 5,
+        createdAt: new Date()
+      });
+      
+      console.log('Default users created');
+    }
+  } catch (error) {
+    console.error('Error initializing users:', error);
+  }
+}
+
+initializeDefaultUsers();
 
 // Middleware
 app.use(cors());
@@ -34,20 +63,21 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, role, phone, specialization, experience } = req.body;
     
-    const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
-    if (existingUser.rows.length > 0) {
+    const existingUser = await db.collection('users').where('email', '==', email).get();
+    if (!existingUser.empty) {
       return res.status(400).json({ message: 'User already exists' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
-    const result = await pool.query(
-      'INSERT INTO users (name, email, password, role, phone, specialization, experience) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
-      [name, email, hashedPassword, role, phone, specialization, experience]
-    );
+    const userDoc = await db.collection('users').add({
+      name, email, 
+      password: hashedPassword, 
+      role, phone, specialization, experience,
+      createdAt: new Date()
+    });
     
-    const userId = result.rows[0].id;
-    const token = jwt.sign({ userId }, 'your-secret-key');
-    res.status(201).json({ token, user: { id: userId, name, email, role } });
+    const token = jwt.sign({ userId: userDoc.id }, 'your-secret-key');
+    res.status(201).json({ token, user: { id: userDoc.id, name, email, role } });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -57,10 +87,16 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    const user = result.rows[0];
+    const userQuery = await db.collection('users').where('email', '==', email).get();
     
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (userQuery.empty) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+    
+    const userDoc = userQuery.docs[0];
+    const user = { id: userDoc.id, ...userDoc.data() };
+    
+    if (!(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
     
@@ -73,10 +109,14 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/auth/profile', auth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, name, email, role, phone, specialization, experience FROM users WHERE id = $1', [req.userId]);
-    const user = result.rows[0];
+    const userDoc = await db.collection('users').doc(req.userId).get();
     
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!userDoc.exists) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    const user = { id: userDoc.id, ...userDoc.data() };
+    delete user.password;
     res.json(user);
   } catch (error) {
     res.status(500).json({ message: error.message });
