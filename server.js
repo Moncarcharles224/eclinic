@@ -3,33 +3,12 @@ const cors = require('cors');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const { pool, initDB } = require('./database');
 
 const app = express();
 
-// In-memory storage (resets on server restart)
-let users = [
-  {
-    id: '1',
-    name: 'Admin User',
-    email: 'admin@eclinic.com',
-    password: '$2a$12$LQv3c1yqBw2uuCD4Gdl30OQ3xvL0Au50cS2Q2b6Ece8aeRXuL.daa', // secret123
-    role: 'admin',
-    createdAt: new Date()
-  },
-  {
-    id: '2',
-    name: 'Dr. Smith',
-    email: 'doctor@eclinic.com',
-    password: '$2a$12$LQv3c1yqBw2uuCD4Gdl30OQ3xvL0Au50cS2Q2b6Ece8aeRXuL.daa', // secret123
-    role: 'doctor',
-    specialization: 'General Medicine',
-    experience: 5,
-    createdAt: new Date()
-  }
-];
-let appointments = [];
-let chats = [];
-let nextId = 3;
+// Initialize database on startup
+initDB();
 
 // Middleware
 app.use(cors());
@@ -55,23 +34,20 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, role, phone, specialization, experience } = req.body;
     
-    if (users.find(u => u.email === email)) {
+    const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existingUser.rows.length > 0) {
       return res.status(400).json({ message: 'User already exists' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
-    const user = {
-      id: nextId++,
-      name, email, 
-      password: hashedPassword, 
-      role, phone, specialization, experience,
-      createdAt: new Date()
-    };
+    const result = await pool.query(
+      'INSERT INTO users (name, email, password, role, phone, specialization, experience) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+      [name, email, hashedPassword, role, phone, specialization, experience]
+    );
     
-    users.push(user);
-    
-    const token = jwt.sign({ userId: user.id }, 'your-secret-key');
-    res.status(201).json({ token, user: { id: user.id, name, email, role } });
+    const userId = result.rows[0].id;
+    const token = jwt.sign({ userId }, 'your-secret-key');
+    res.status(201).json({ token, user: { id: userId, name, email, role } });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -81,7 +57,9 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    const user = users.find(u => u.email === email);
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const user = result.rows[0];
+    
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -93,148 +71,287 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.get('/api/auth/profile', auth, (req, res) => {
-  const user = users.find(u => u.id == req.userId);
-  if (!user) return res.status(404).json({ message: 'User not found' });
-  
-  const { password, ...userWithoutPassword } = user;
-  res.json(userWithoutPassword);
+app.get('/api/auth/profile', auth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name, email, role, phone, specialization, experience FROM users WHERE id = $1', [req.userId]);
+    const user = result.rows[0];
+    
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Appointment routes
-app.get('/api/appointments/doctors', (req, res) => {
-  const doctors = users.filter(u => u.role === 'doctor').map(({ password, ...doctor }) => doctor);
-  res.json(doctors);
-});
-
-app.post('/api/appointments/book', auth, (req, res) => {
-  const { doctorId, date, time, symptoms } = req.body;
-  
-  const appointment = {
-    id: nextId++,
-    patient: req.userId,
-    doctor: doctorId,
-    date: new Date(date),
-    time,
-    symptoms,
-    status: 'pending',
-    createdAt: new Date()
-  };
-  
-  appointments.push(appointment);
-  
-  const populatedAppointment = {
-    ...appointment,
-    patient: users.find(u => u.id == req.userId),
-    doctor: users.find(u => u.id == doctorId)
-  };
-  
-  res.status(201).json(populatedAppointment);
-});
-
-app.get('/api/appointments/my-appointments', auth, (req, res) => {
-  const user = users.find(u => u.id == req.userId);
-  let userAppointments = [];
-  
-  if (user.role === 'patient') {
-    userAppointments = appointments.filter(apt => apt.patient == req.userId);
-  } else if (user.role === 'doctor') {
-    userAppointments = appointments.filter(apt => apt.doctor == req.userId);
+app.get('/api/appointments/doctors', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name, email, specialization, experience FROM users WHERE role = $1', ['doctor']);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-  
-  const populatedAppointments = userAppointments.map(apt => ({
-    ...apt,
-    patient: users.find(u => u.id == apt.patient),
-    doctor: users.find(u => u.id == apt.doctor)
-  }));
-  
-  res.json(populatedAppointments);
 });
 
-app.patch('/api/appointments/:id/status', auth, (req, res) => {
-  const { status, diagnosis, prescription } = req.body;
-  const appointment = appointments.find(apt => apt.id == req.params.id);
-  
-  if (!appointment) return res.status(404).json({ message: 'Appointment not found' });
-  
-  appointment.status = status;
-  if (diagnosis) appointment.diagnosis = diagnosis;
-  if (prescription) appointment.prescription = prescription;
-  
-  const populatedAppointment = {
-    ...appointment,
-    patient: users.find(u => u.id == appointment.patient),
-    doctor: users.find(u => u.id == appointment.doctor)
-  };
-  
-  res.json(populatedAppointment);
+app.post('/api/appointments/book', auth, async (req, res) => {
+  try {
+    const { doctorId, date, time, symptoms } = req.body;
+    
+    const result = await pool.query(
+      'INSERT INTO appointments (patient_id, doctor_id, date, time, symptoms) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [req.userId, doctorId, date, time, symptoms]
+    );
+    
+    const appointment = result.rows[0];
+    
+    // Get patient and doctor info
+    const patientResult = await pool.query('SELECT id, name, email, phone FROM users WHERE id = $1', [req.userId]);
+    const doctorResult = await pool.query('SELECT id, name, specialization FROM users WHERE id = $1', [doctorId]);
+    
+    const populatedAppointment = {
+      ...appointment,
+      patient: patientResult.rows[0],
+      doctor: doctorResult.rows[0]
+    };
+    
+    res.status(201).json(populatedAppointment);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get('/api/appointments/my-appointments', auth, async (req, res) => {
+  try {
+    const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [req.userId]);
+    const userRole = userResult.rows[0]?.role;
+    
+    let query, params;
+    if (userRole === 'patient') {
+      query = `
+        SELECT a.*, 
+               p.name as patient_name, p.email as patient_email, p.phone as patient_phone,
+               d.name as doctor_name, d.specialization as doctor_specialization
+        FROM appointments a
+        JOIN users p ON a.patient_id = p.id
+        JOIN users d ON a.doctor_id = d.id
+        WHERE a.patient_id = $1
+        ORDER BY a.date DESC
+      `;
+      params = [req.userId];
+    } else if (userRole === 'doctor') {
+      query = `
+        SELECT a.*, 
+               p.name as patient_name, p.email as patient_email, p.phone as patient_phone,
+               d.name as doctor_name, d.specialization as doctor_specialization
+        FROM appointments a
+        JOIN users p ON a.patient_id = p.id
+        JOIN users d ON a.doctor_id = d.id
+        WHERE a.doctor_id = $1
+        ORDER BY a.date DESC
+      `;
+      params = [req.userId];
+    }
+    
+    const result = await pool.query(query, params);
+    
+    const appointments = result.rows.map(row => ({
+      id: row.id,
+      date: row.date,
+      time: row.time,
+      symptoms: row.symptoms,
+      diagnosis: row.diagnosis,
+      prescription: row.prescription,
+      status: row.status,
+      created_at: row.created_at,
+      patient: {
+        id: row.patient_id,
+        name: row.patient_name,
+        email: row.patient_email,
+        phone: row.patient_phone
+      },
+      doctor: {
+        id: row.doctor_id,
+        name: row.doctor_name,
+        specialization: row.doctor_specialization
+      }
+    }));
+    
+    res.json(appointments);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.patch('/api/appointments/:id/status', auth, async (req, res) => {
+  try {
+    const { status, diagnosis, prescription } = req.body;
+    
+    let query = 'UPDATE appointments SET status = $1';
+    let params = [status];
+    let paramCount = 1;
+    
+    if (diagnosis) {
+      query += `, diagnosis = $${++paramCount}`;
+      params.push(diagnosis);
+    }
+    if (prescription) {
+      query += `, prescription = $${++paramCount}`;
+      params.push(prescription);
+    }
+    
+    query += ` WHERE id = $${++paramCount} RETURNING *`;
+    params.push(req.params.id);
+    
+    const result = await pool.query(query, params);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Appointment not found' });
+    }
+    
+    const appointment = result.rows[0];
+    
+    // Get patient and doctor info
+    const patientResult = await pool.query('SELECT id, name, email, phone FROM users WHERE id = $1', [appointment.patient_id]);
+    const doctorResult = await pool.query('SELECT id, name, specialization FROM users WHERE id = $1', [appointment.doctor_id]);
+    
+    const populatedAppointment = {
+      ...appointment,
+      patient: patientResult.rows[0],
+      doctor: doctorResult.rows[0]
+    };
+    
+    res.json(populatedAppointment);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Chat routes
-app.get('/api/chat/:appointmentId', auth, (req, res) => {
-  const messages = chats.filter(chat => chat.appointment == req.params.appointmentId)
-    .map(chat => ({
-      ...chat,
-      sender: users.find(u => u.id == chat.sender)
+app.get('/api/chat/:appointmentId', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.*, u.name as sender_name, u.role as sender_role
+      FROM chats c
+      JOIN users u ON c.sender_id = u.id
+      WHERE c.appointment_id = $1
+      ORDER BY c.timestamp ASC
+    `, [req.params.appointmentId]);
+    
+    const messages = result.rows.map(row => ({
+      id: row.id,
+      message: row.message,
+      timestamp: row.timestamp,
+      sender: {
+        _id: row.sender_id,
+        name: row.sender_name,
+        role: row.sender_role
+      }
     }));
-  res.json(messages);
+    
+    res.json(messages);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
-app.post('/api/chat/:appointmentId', auth, (req, res) => {
-  const { message } = req.body;
-  
-  const chat = {
-    id: nextId++,
-    appointment: req.params.appointmentId,
-    sender: req.userId,
-    message,
-    timestamp: new Date()
-  };
-  
-  chats.push(chat);
-  
-  const populatedChat = {
-    ...chat,
-    sender: users.find(u => u.id == req.userId)
-  };
-  
-  res.status(201).json(populatedChat);
+app.post('/api/chat/:appointmentId', auth, async (req, res) => {
+  try {
+    const { message } = req.body;
+    
+    const result = await pool.query(
+      'INSERT INTO chats (appointment_id, sender_id, message) VALUES ($1, $2, $3) RETURNING *',
+      [req.params.appointmentId, req.userId, message]
+    );
+    
+    const chat = result.rows[0];
+    
+    const userResult = await pool.query('SELECT name, role FROM users WHERE id = $1', [req.userId]);
+    const sender = userResult.rows[0];
+    
+    const populatedChat = {
+      ...chat,
+      sender: {
+        _id: req.userId,
+        name: sender.name,
+        role: sender.role
+      }
+    };
+    
+    res.status(201).json(populatedChat);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Admin routes
-app.get('/api/admin/users', auth, (req, res) => {
-  const user = users.find(u => u.id == req.userId);
-  if (user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin access required' });
+app.get('/api/admin/users', auth, async (req, res) => {
+  try {
+    const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [req.userId]);
+    if (userResult.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+    
+    const result = await pool.query('SELECT id, name, email, role, phone, specialization, experience, created_at FROM users');
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-  
-  const usersWithoutPasswords = users.map(({ password, ...user }) => user);
-  res.json(usersWithoutPasswords);
 });
 
-app.get('/api/admin/appointments', auth, (req, res) => {
-  const user = users.find(u => u.id == req.userId);
-  if (user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin access required' });
+app.get('/api/admin/appointments', auth, async (req, res) => {
+  try {
+    const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [req.userId]);
+    if (userResult.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+    
+    const result = await pool.query(`
+      SELECT a.*, 
+             p.name as patient_name, p.email as patient_email,
+             d.name as doctor_name, d.specialization as doctor_specialization
+      FROM appointments a
+      JOIN users p ON a.patient_id = p.id
+      JOIN users d ON a.doctor_id = d.id
+      ORDER BY a.created_at DESC
+    `);
+    
+    const appointments = result.rows.map(row => ({
+      id: row.id,
+      date: row.date,
+      time: row.time,
+      symptoms: row.symptoms,
+      diagnosis: row.diagnosis,
+      prescription: row.prescription,
+      status: row.status,
+      createdAt: row.created_at,
+      patient: {
+        name: row.patient_name,
+        email: row.patient_email
+      },
+      doctor: {
+        name: row.doctor_name,
+        specialization: row.doctor_specialization
+      }
+    }));
+    
+    res.json(appointments);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-  
-  const populatedAppointments = appointments.map(apt => ({
-    ...apt,
-    patient: users.find(u => u.id == apt.patient),
-    doctor: users.find(u => u.id == apt.doctor)
-  }));
-  
-  res.json(populatedAppointments);
 });
 
-app.delete('/api/admin/users/:id', auth, (req, res) => {
-  const user = users.find(u => u.id == req.userId);
-  if (user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin access required' });
+app.delete('/api/admin/users/:id', auth, async (req, res) => {
+  try {
+    const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [req.userId]);
+    if (userResult.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+    
+    await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-  
-  users = users.filter(u => u.id != req.params.id);
-  res.json({ message: 'User deleted successfully' });
 });
 
 // Serve frontend
