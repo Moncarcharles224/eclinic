@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - eClinic</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <h2>eClinic Admin</h2>
+            </div>
+            <div class="nav-menu">
+                <span id="userName">Welcome, Admin</span>
+                <button class="btn-secondary" onclick="logout()">Logout</button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="dashboard">
+        <aside class="sidebar">
+            <ul class="sidebar-menu">
+                <li><a href="#overview" onclick="showSection('overview')" class="active">Overview</a></li>
+                <li><a href="#users" onclick="showSection('users')">Users</a></li>
+                <li><a href="#appointments" onclick="showSection('appointments')">Appointments</a></li>
+            </ul>
+        </aside>
+
+        <main class="dashboard-content">
+            <section id="overview" class="dashboard-section active">
+                <h2>System Overview</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3 id="totalUsers">0</h3>
+                        <p>Total Users</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3 id="totalDoctors">0</h3>
+                        <p>Doctors</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3 id="totalPatients">0</h3>
+                        <p>Patients</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3 id="totalAppointments">0</h3>
+                        <p>Appointments</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="users" class="dashboard-section">
+                <h2>User Management</h2>
+                <div id="usersList" class="users-list">
+                    <p>Loading users...</p>
+                </div>
+            </section>
+
+            <section id="appointments" class="dashboard-section">
+                <h2>All Appointments</h2>
+                <div id="appointmentsList" class="appointments-list">
+                    <p>Loading appointments...</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="../js/app.js"></script>
+    <script src="../js/admin-dashboard.js"></script>
+</body>
+</html>
